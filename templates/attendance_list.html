@@ -10,22 +10,54 @@
     <p>Expires at (UTC): {{ session.expires_at }}</p>
 
     {% if records %}
-        <table border="1" cellpadding="5" cellspacing="0">
+        <table id="att-table" border="1" cellpadding="5" cellspacing="0">
+            <thead>
             <tr>
                 <th>#</th>
                 <th>Student ID</th>
+                <th>Student Name</th>
                 <th>Marked at (UTC)</th>
             </tr>
+            </thead>
+            <tbody>
             {% for r in records %}
             <tr>
                 <td>{{ loop.index }}</td>
                 <td>{{ r.student_id }}</td>
+                <td>{{ r.student_name }}</td>
                 <td>{{ r.marked_at }}</td>
             </tr>
             {% endfor %}
+            </tbody>
         </table>
     {% else %}
         <p>No attendance records yet for this session.</p>
     {% endif %}
+    
+<script>
+// Poll the JSON endpoint to refresh the table every 5 seconds
+const sessionCode = "{{ session.code }}";
+async function fetchRecords() {
+    try {
+        const resp = await fetch(`/session/${sessionCode}/attendance.json`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const tbody = document.querySelector('#att-table tbody');
+        if (!tbody) return; // table not present
+        tbody.innerHTML = '';
+        data.records.forEach((r, idx) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${idx+1}</td><td>${r.student_id}</td><td>${r.student_name}</td><td>${r.marked_at}</td>`;
+            tbody.appendChild(tr);
+        });
+    } catch (err) {
+        console.error('Failed to fetch records', err);
+    }
+}
+// Only start polling if there's a table on the page
+if (document.getElementById('att-table')) {
+    setInterval(fetchRecords, 5000);
+}
+</script>
 </body>
 </html>

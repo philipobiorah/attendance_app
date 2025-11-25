@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 from flask import (
     Flask, request, redirect, url_for,
-    render_template, send_file, flash
+    render_template, send_file, flash, jsonify
 )
 from flask_sqlalchemy import SQLAlchemy
 import qrcode
@@ -23,15 +23,18 @@ db = SQLAlchemy(app)
 class Session(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     code = db.Column(db.String(64), unique=True, nullable=False)
+    current_code = db.Column(db.String(64), nullable=False)
     course_name = db.Column(db.String(100), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     expires_at = db.Column(db.DateTime, nullable=False)
+    last_code_rotation = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 class Attendance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     session_id = db.Column(db.Integer, db.ForeignKey("session.id"), nullable=False)
     student_id = db.Column(db.String(50), nullable=False)
+    student_name = db.Column(db.String(100), nullable=False)
     marked_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     __table_args__ = (
@@ -60,6 +63,7 @@ def create_session():
 
         session = Session(
             code=code,
+                current_code=code,
             course_name=course_name,
             created_at=now,
             expires_at=expires_at,
@@ -87,14 +91,23 @@ def session_qr(code):
     Generate QR code image that encodes the attendance URL.
     """
     session = Session.query.filter_by(code=code).first_or_404()
-    attend_url = url_for("attend", code=session.code, _external=True)
+        
+    # Rotate the code every time QR is requested (prevents sharing)
+    session.current_code = str(uuid.uuid4())
+    session.last_code_rotation = datetime.utcnow()
+    db.session.commit()
+        
+    attend_url = url_for("attend", code=session.current_code, _external=True)
 
     img = qrcode.make(attend_url)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
 
-    return send_file(buf, mimetype="image/png")
+    # Return image as response but include the current_code in a header
+    response = send_file(buf, mimetype="image/png")
+    response.headers["X-Current-Code"] = session.current_code
+    return response
 
 
 # ---------- ROUTES FOR STUDENTS ----------
@@ -102,9 +115,10 @@ def session_qr(code):
 @app.route("/attend/<code>", methods=["GET", "POST"])
 def attend(code):
     """
-    Student scans QR -> lands here -> enters student ID -> attendance recorded.
+    Student scans QR -> lands here -> enters student ID and name -> attendance recorded.
     """
-    session = Session.query.filter_by(code=code).first_or_404()
+    # Look up by current_code (which is in the QR code URL)
+    session = Session.query.filter_by(current_code=code).first_or_404()
 
     # Check if the session has expired
     if datetime.utcnow() > session.expires_at:
@@ -112,9 +126,14 @@ def attend(code):
 
     if request.method == "POST":
         student_id = request.form.get("student_id", "").strip()
+        student_name = request.form.get("student_name", "").strip()
 
         if not student_id:
             flash("Please enter your student ID.")
+            return redirect(request.url)
+
+        if not student_name:
+            flash("Please enter your name.")
             return redirect(request.url)
 
         # Check if already marked for this session
@@ -126,7 +145,7 @@ def attend(code):
         if existing:
             return "Your attendance is already recorded for this session."
 
-        record = Attendance(session_id=session.id, student_id=student_id)
+        record = Attendance(session_id=session.id, student_id=student_id, student_name=student_name)
         db.session.add(record)
         db.session.commit()
 
@@ -140,9 +159,27 @@ def view_attendance(code):
     """
     View attendance list for a specific session.
     """
-    session = Session.query.filter_by(code=code).first_or_404()
+    # Accept either permanent session code or the rotating current_code
+    session = Session.query.filter_by(code=code).first()
+    if session is None:
+        session = Session.query.filter_by(current_code=code).first_or_404()
+
     records = Attendance.query.filter_by(session_id=session.id).order_by(Attendance.marked_at).all()
     return render_template("attendance_list.html", session=session, records=records)
+
+
+@app.route("/session/<code>/attendance.json")
+def attendance_json(code):
+    """Return attendance records as JSON for polling/updating the table."""
+    session = Session.query.filter_by(code=code).first()
+    if session is None:
+        session = Session.query.filter_by(current_code=code).first_or_404()
+
+    records = Attendance.query.filter_by(session_id=session.id).order_by(Attendance.marked_at).all()
+    data = [
+        {"student_id": r.student_id, "student_name": r.student_name, "marked_at": r.marked_at.isoformat()} for r in records
+    ]
+    return jsonify({"session_code": session.code, "records": data})
 
 
 # For AWS Elastic Beanstalk

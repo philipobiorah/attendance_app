@@ -9,20 +9,54 @@
     <p>Expires at (UTC): {{ session.expires_at }}</p>
 
     <h2>QR Code</h2>
-    <p>Students should scan this QR to mark attendance:</p>
-    <img src="{{ url_for('session_qr', code=session.code) }}" alt="QR Code">
+    <p>Students should scan this QR to mark attendance. The QR will refresh automatically to prevent sharing:</p>
+    <div>
+        <img id="qr-img" src="" alt="QR Code" style="width:256px;height:256px;">
+    </div>
 
-    <p>Or share this link directly:</p>
+    <p>Direct attend link (always points to the latest code):</p>
     <p>
-        <a href="{{ url_for('attend', code=session.code, _external=True) }}">
-            {{ url_for('attend', code=session.code, _external=True) }}
-        </a>
+        <a id="attend-link" href="#">Loading...</a>
     </p>
     <p>
-    <a href="{{ url_for('view_attendance', code=session.code) }}">
+    <a id="view-attendance" href="{{ url_for('view_attendance', code=session.code) }}">
         View attendance for this session
     </a>
     </p>
+
+<script>
+// Fetch the QR image via fetch so we can read the X-Current-Code header and update the direct link.
+const sessionCode = "{{ session.code }}";
+const qrImg = document.getElementById('qr-img');
+const attendLink = document.getElementById('attend-link');
+const viewAttendance = document.getElementById('view-attendance');
+
+async function refreshQr() {
+    try {
+        const resp = await fetch(`/session/${sessionCode}/qr`);
+        if (!resp.ok) throw new Error('QR fetch failed');
+        const blob = await resp.blob();
+        const curCode = resp.headers.get('X-Current-Code');
+        const url = URL.createObjectURL(blob);
+        qrImg.src = url;
+        if (curCode) {
+            const attendUrl = `${location.protocol}//${location.host}/attend/${curCode}`;
+            attendLink.href = attendUrl;
+            attendLink.textContent = attendUrl;
+            // make view attendance link point to permanent code (already using session.code)
+            // optionally we could also show a view for the rotating code
+        }
+        // revoke URL after some time to release memory
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } catch (err) {
+        console.error('Failed to refresh QR', err);
+    }
+}
+
+// Refresh immediately and then every 15 seconds
+refreshQr();
+setInterval(refreshQr, 15000);
+</script>
 
     
 </body>
