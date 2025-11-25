@@ -91,12 +91,16 @@ def session_qr(code):
     Generate QR code image that encodes the attendance URL.
     """
     session = Session.query.filter_by(code=code).first_or_404()
-        
-    # Rotate the code every time QR is requested (prevents sharing)
-    session.current_code = str(uuid.uuid4())
-    session.last_code_rotation = datetime.utcnow()
-    db.session.commit()
-        
+    
+    # Rotate the code only once every 60 seconds (reduces server load on EC2)
+    now = datetime.utcnow()
+    time_since_rotation = (now - session.last_code_rotation).total_seconds()
+    if time_since_rotation >= 60:
+        # Only generate a new code every 60 seconds
+        session.current_code = str(uuid.uuid4())
+        session.last_code_rotation = now
+        db.session.commit()
+    
     attend_url = url_for("attend", code=session.current_code, _external=True)
 
     img = qrcode.make(attend_url)
